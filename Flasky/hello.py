@@ -8,8 +8,10 @@ from flask_wtf import FlaskForm
 from flask_sqlalchemy import SQLAlchemy
 from flask_script import Shell, Manager
 from flask_migrate import Migrate, MigrateCommand
+from flask_mail import Mail, Message
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
+from threading import Thread
 import os
 
 # 基本设置
@@ -22,11 +24,22 @@ app.config['SECRET_KEY'] = 'what the fuck'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'data.sqlite')
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['MAIL_SERVER'] = 'smtp.qq.com'
+app.config['MAIL_PORT'] = 25
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
+# 设定邮件主题的前缀
+app.config['FLASKY_MAIL_SUBJECT_PREFIX'] = '[AlexFlasky]'
+# 设定发件人地址
+app.config['FLASKY_MAIL_SENDER'] = 'Alex Ryan <393509964@qq.com>'
+app.config['FLASKY_ADMIN'] = os.environ.get('FLASKY_ADMIN')
 manager = Manager(app)
 bootstrap = Bootstrap(app)
 moment = Moment(app)
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
+mail = Mail(app)
 
 
 # all the class
@@ -68,6 +81,24 @@ manager.add_command('db', MigrateCommand)
 manager.add_command("shell", Shell(make_context=make_shell_context))
 
 
+# 异步发送邮件
+def send_async_email(app, msg):
+    # 由于很多Flask拓展都假设已经存在激活的程序上下文和请求上下文，因此必须激活程序上下文
+    with app.app_context():
+        mail.send(msg)
+
+
+# 配置邮件发送函数
+def send_email(to, subject, template, **kwargs):
+    msg = Message(app.config['FLASKY_MAIL_SUBJECT_PREFIX'] + subject, sender=app.config['FLASKY_MAIL_SENDER'], recipients=[to])
+    msg.body = render_template(template + '.txt', **kwargs)
+    msg.html = render_template(template + '.html', **kwargs)
+    # 线程针对send_async_email方法，args进行传参
+    thr = Thread(target=send_async_email, args=[app, msg])
+    thr.start()
+    return thr
+
+
 @app.route('/', methods=['GET', 'POST'])
 def index():
     # 错误：form 应为 NameForm的一个实例化对象，之前写成了form = NameForm
@@ -82,6 +113,8 @@ def index():
             user = User(username=form.name.data)
             db.session.add(user)
             session['known'] = False
+            if app.config['FLASKY_ADMIN']:
+                send_email(app.config['FLASKY_ADMIN'], 'New User', 'mail/new_user', user=user)
         else:
             session['known'] = True
         # 重设表单数据为空
